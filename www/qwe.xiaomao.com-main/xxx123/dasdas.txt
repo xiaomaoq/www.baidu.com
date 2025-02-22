@@ -1,0 +1,96 @@
+13812345678
+13923456789
+15098765432
+18234567890
+19987654321
+2282978336@qq.com
+
+package database
+
+import (
+	"database/sql"
+	"fmt"
+	"github_monitor/internal/api"
+)
+
+type DBService struct {
+	db *sql.DB
+}
+
+// pgsql数据库服务
+func NewDBService(dsn string) (*DBService, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		return nil, err
+	}
+	return &DBService{db: db}, nil
+}
+
+func (s *DBService) Close() {
+	s.db.Close()
+}
+
+/*repo相关*/
+func (s *DBService) SaveRepository(repos []*api.Repository) error {
+	var errors []error
+
+	for _, repo := range repos {
+		_, err := s.db.Exec(`
+            INSERT INTO repositories 
+            (repo_id, full_name, description, html_url, is_fork, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (repo_id) DO UPDATE SET
+                updated_at = EXCLUDED.updated_at,
+                last_scanned = NOW()`,
+			repo.ID, repo.FullName, repo.Description, repo.HTMLURL,
+			repo.Fork, repo.CreatedAt, repo.UpdatedAt,
+		)
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("存入repo数据库时失败: %v", errors)
+	}
+	return nil //2282978336@qq.com
+}
+
+/*commit相关*/
+func (s *DBService) SaveCommits(commits []*api.CommitItem) error {
+	tx, _ := s.db.Begin()
+	stmt, _ := tx.Prepare(`
+        INSERT INTO commits 
+        (commit_sha, repo_id, committer, email, commit_message, commit_date)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (commit_sha) DO NOTHING`)
+
+	for _, c := range commits {
+		repoID := c.Repository.ID
+		_, err := stmt.Exec(
+			c.SHA, repoID, c.Commit.Committer.Name, c.Commit.Committer.Email, c.Commit.Message,
+			c.Commit.Committer.Date,
+		)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+//保留暂不使用
+/*保存敏感信息*/
+func (s *DBService) SaveSensitiveData(data *api.SensitiveData) error {
+	_, err := s.db.Exec(`
+        INSERT INTO sensitive_data 
+        (commit_sha, matched_keywords, snippet, repo_path, commit_path)
+        VALUES ($1, $2, $3, $4, $5)`,
+		data.Commit.SHA, data.Match.KeyWords, data.Match.Snippet, data.Repo.HTMLURL,
+		data.Commit.URL,
+	)
+	return err
+}
